@@ -2,9 +2,19 @@ import polars as pl
 import os
 from datetime import datetime, timedelta
 from rich import print
+from dotenv import load_dotenv
 
-SCHEDULE_DIR = "data/schedule"
-EMISSIONS_FILE = "data/emissions.csv"
+# Load environment variables from .env file
+load_dotenv()
+
+SCHEDULE_DIR = os.getenv("SCHEDULE_DIR", "data/schedule")
+EMISSIONS_FILE = os.getenv("EMISSIONS_FILE", "data/emissions.csv")
+
+# Check that required files/directories exist
+if not os.path.exists(SCHEDULE_DIR):
+    print(f"[red]Error: SCHEDULE_DIR not found at {SCHEDULE_DIR}[/red]")
+if not os.path.exists(EMISSIONS_FILE):
+    print(f"[red]Error: EMISSIONS_FILE not found at {EMISSIONS_FILE}[/red]")
 
 # Columns to extract from schedule CSVs
 # Mapping: Requested Name -> CSV Column Name
@@ -44,6 +54,7 @@ def _load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
     frames = []
 
     current_date = start_date
+    files_found = 0
     while current_date <= end_date:
         # Include all days (removed weekend skip)
         path = os.path.join(SCHEDULE_DIR, f"{current_date.year}/{current_date.month:02d}/{current_date.day:02d}.csv")
@@ -51,11 +62,14 @@ def _load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
             # Select required columns
             df = pl.scan_csv(path, infer_schema_length=0).select(columns)
             frames.append(df)
+            files_found += 1
 
         # Move to next day
         current_date += timedelta(days=1)
 
+    print(f"[blue]Loaded {files_found} schedule files[/blue]")
     if not frames:
+        print(f"[red]Warning: No schedule files found between {start_date} and {end_date}[/red]")
         return pl.LazyFrame()
 
     # Concatenate all frames
@@ -98,7 +112,13 @@ def _load_emissions() -> pl.LazyFrame:
     """Load the emissions from the emissions file, selecting required columns and filling nulls with mean."""
     columns = list(EMISSIONS_COLUMNS.values())
 
+    # Check if emissions file exists
+    if not os.path.exists(EMISSIONS_FILE):
+        print(f"[red]Error: Emissions file not found at {EMISSIONS_FILE}[/red]")
+        return pl.LazyFrame()
+
     # Load CSV with proper schema inference
+    print(f"[blue]Loading emissions data from {EMISSIONS_FILE}[/blue]")
     df = pl.scan_csv(EMISSIONS_FILE, infer_schema_length=10000)
 
     # Select required columns

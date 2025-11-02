@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.13.2",
     "fastapi[standard]>=0.120.4",
     "polars>=1.35.1",
+    "python-dotenv>=1.0.0",
     "rich>=14.2.0",
     "uvicorn>=0.38.0",
 ]
