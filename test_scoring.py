@@ -2,12 +2,12 @@
 """Test script for scoring function"""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from candidates import CANDIDATE_CITIES, get_airport_code_by_city
 from filter import get_filtered_candidates
 from scoring import score_meeting_location
 
-# Test input data
+# Test input data (using shorter date range for faster testing)
 test_input = {
     "attendees": {
         "Mumbai": 2,
@@ -18,7 +18,7 @@ test_input = {
     },
     "availability_window": {
         "start": "2024-01-01T09:00:00Z",
-        "end": "2025-01-15T17:00:00Z"
+        "end": "2024-01-15T17:00:00Z"
     },
     "event_duration": {
         "days": 0,
@@ -108,26 +108,37 @@ print(f"\nBest Candidate Details:")
 best_details = result['details'][result['best_candidate']]
 print(json.dumps(best_details, indent=2))
 
-print("\n=== FULL OUTPUT ===")
+print("\n=== SIMPLIFIED OUTPUT ===")
+# Calculate statistics
+import statistics
+travel_hours_list = list(result['attendee_travel_hours'].values())
+avg_travel = statistics.mean(travel_hours_list) if travel_hours_list else 0
+median_travel = statistics.median(travel_hours_list) if travel_hours_list else 0
+max_travel = max(travel_hours_list) if travel_hours_list else 0
+min_travel = min(travel_hours_list) if travel_hours_list else 0
+
+# Calculate event dates
+start = datetime.fromisoformat(availability_window["start"].replace("Z", "+00:00"))
+event_duration = test_input.get("event_duration", {})
+duration_hours = event_duration.get("hours", 4) + (event_duration.get("days", 0) * 24)
+event_start = start
+event_end = event_start + timedelta(hours=duration_hours)
+
 output = {
     "event_location": best_details['city_name'],
-    "event_location_code": result['best_candidate'],
     "event_dates": {
-        "start": availability_window.get("start"),
-        "end": availability_window.get("end"),
-        "hours": time_limit_hours
+        "start": event_start.isoformat(),
+        "end": event_end.isoformat()
     },
-    "event_duration": test_input.get("event_duration", {}),
-    "attendee_travel_hours": result['attendee_travel_hours'],
-    "scoring_details": {
-        "travel_time_score": best_details['travel_time_score'],
-        "emissions_score": best_details['emissions_score'],
-        "composite_score": best_details['composite_score'],
-        "coordinates": best_details['coordinates'],
-        "weights": {
-            "time": 0.5,
-            "emissions": 0.5
-        }
-    }
+    "event_span": {
+        "start": availability_window.get("start"),
+        "end": availability_window.get("end")
+    },
+    "total_co2": round(best_details.get('total_co2', 0), 2),
+    "average_travel_hours": round(avg_travel, 2),
+    "median_travel_hours": round(median_travel, 2),
+    "max_travel_hours": round(max_travel, 2),
+    "min_travel_hours": round(min_travel, 2),
+    "attendee_travel_hours": {city: round(hours, 2) for city, hours in result['attendee_travel_hours'].items()}
 }
 print(json.dumps(output, indent=2))

@@ -69,6 +69,16 @@ def score_meeting_location(
     # Get airport codes for attendees
     attendee_airports = _get_airport_codes(list(attendee_cities.keys()))
 
+    # Cache flights by route on first pass (streaming once through all data)
+    print("[DEBUG] Caching flight data by route...")
+    route_cache = {}  # Map: (depart_apt, arrival_apt) -> [flights]
+    for flight in stream_joined_flights(schedule, emissions):
+        route_key = (flight.get('DEPAPT'), flight.get('ARRAPT'))
+        if route_key not in route_cache:
+            route_cache[route_key] = []
+        route_cache[route_key].append(flight)
+    print(f"[DEBUG] Cached {len(route_cache)} routes")
+
     # Score each candidate city
     all_route_options = []
     attendee_travel_times = {}  # Map: candidate_code -> {attendee_city -> travel_hours}
@@ -85,12 +95,9 @@ def score_meeting_location(
 
         for attendee_city, attendee_airport in attendee_airports.items():
             try:
-                # Get flights from attendee to candidate
-                flights_data = []
-                for flight in stream_joined_flights(schedule, emissions):
-                    if (flight.get('DEPAPT') == attendee_airport and
-                        flight.get('ARRAPT') == candidate_code):
-                        flights_data.append(flight)
+                # Get flights from cache instead of re-streaming
+                route_key = (attendee_airport, candidate_code)
+                flights_data = route_cache.get(route_key, [])
 
                 if flights_data:
                     # Calculate max travel time from flights using ELPTIM (elapsed time in minutes)
@@ -157,11 +164,33 @@ def score_meeting_location(
 
         all_route_options.append(route_options)
 
+        # Calculate total CO2 for this candidate from best flight per attendee route
+        total_co2 = 0
+        for route_opt in route_options:
+            if 'flights' in route_opt:
+                # Find the best flight (lowest CO2) for this attendee route
+                best_co2 = float('inf')
+                for flight in route_opt['flights']:
+                    co2 = flight.get('ESTIMATED_CO2_TOTAL_TONNES', 0)
+                    if isinstance(co2, str):
+                        try:
+                            co2 = float(co2)
+                        except (ValueError, TypeError):
+                            co2 = 0
+                    if co2 < best_co2:
+                        best_co2 = co2
+                if best_co2 != float('inf'):
+                    total_co2 += best_co2
+            else:
+                # No flights, CO2 = 0 (haversine estimate)
+                pass
+
         # Store candidate info for later
         details[candidate_code] = {
             'city_name': candidate_name,
             'country': candidate_info.get('country', ''),
-            'coordinates': candidate_coords
+            'coordinates': candidate_coords,
+            'total_co2': total_co2
         }
 
     # Use the scoring helper to compute scores

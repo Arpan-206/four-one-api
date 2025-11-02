@@ -24,6 +24,7 @@ CANDIDATE_CITIES = {
     "NRT": {"city": "Tokyo", "country": "Japan", "lat": 35.6769, "lon": 139.7639},
     "HND": {"city": "Tokyo", "country": "Japan", "lat": 35.6769, "lon": 139.7639},
     "ICN": {"city": "Seoul", "country": "South Korea", "lat": 37.5667, "lon": 126.9783},
+    "PVG": {"city": "Shanghai", "country": "China", "lat": 31.2304, "lon": 121.3425},
     "HKG": {"city": "Hong Kong", "country": "Hong Kong", "lat": 22.3506, "lon": 114.1849},
     "SIN": {"city": "Singapore", "country": "Singapore", "lat": 1.3521, "lon": 103.8198},
     "BKK": {"city": "Bangkok", "country": "Thailand", "lat": 13.7525, "lon": 100.4935},
@@ -47,6 +48,8 @@ CANDIDATE_CITIES = {
     "MEX": {"city": "Mexico City", "country": "Mexico", "lat": 19.3208, "lon": -99.1515},
     "TOR": {"city": "Toronto", "country": "Canada", "lat": 43.6535, "lon": -79.3839},
     "YVR": {"city": "Vancouver", "country": "Canada", "lat": 49.1847, "lon": -123.1786},
+    "AAL": {"city": "Aarhus", "country": "Denmark", "lat": 56.0896, "lon": 10.6182},
+    "IAH": {"city": "Houston", "country": "USA", "lat": 29.9792, "lon": -95.3369},
 }
 
 

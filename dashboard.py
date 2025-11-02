@@ -217,28 +217,43 @@ def convert_input_to_output(input_data: dict, time_weight: float = 0.5, emission
             if city not in attendee_travel_hours:
                 attendee_travel_hours[city] = 0.0
 
+        # Calculate statistics from attendee travel hours
+        import statistics
+        travel_hours_list = list(attendee_travel_hours.values())
+
+        avg_travel = statistics.mean(travel_hours_list) if travel_hours_list else 0
+        median_travel = statistics.median(travel_hours_list) if travel_hours_list else 0
+        max_travel = max(travel_hours_list) if travel_hours_list else 0
+        min_travel = min(travel_hours_list) if travel_hours_list else 0
+
+        # Calculate event dates within the availability window
+        start = datetime.fromisoformat(availability_window["start"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(availability_window["end"].replace("Z", "+00:00"))
+
+        event_duration = input_data.get("event_duration", {})
+        duration_hours = event_duration.get("hours", 4) + (event_duration.get("days", 0) * 24)
+
+        # Event starts at beginning of availability window
+        event_start = start
+        event_end = event_start + timedelta(hours=duration_hours)
+
+        # Simplified output with only required fields
         output = {
             "event_location": best_info['city_name'],
-            "event_location_code": best_candidate_code,
             "event_dates": {
+                "start": event_start.isoformat(),
+                "end": event_end.isoformat()
+            },
+            "event_span": {
                 "start": availability_window.get("start"),
-                "end": availability_window.get("end"),
-                "hours": time_limit_hours
+                "end": availability_window.get("end")
             },
-            "event_duration": input_data.get("event_duration", {}),
-            "attendee_travel_hours": attendee_travel_hours,
-            "scoring_details": {
-                "travel_time_score": best_info['travel_time_score'],
-                "emissions_score": best_info['emissions_score'],
-                "composite_score": best_info['composite_score'],
-                "coordinates": best_info['coordinates'],
-                "weights": {
-                    "time": time_weight,
-                    "emissions": emissions_weight
-                }
-            },
-            "raw_input": input_data,
-            "filtered_candidates": candidate_cities
+            "total_co2": round(best_info.get('total_co2', 0), 2),  # Actual CO2 from flights
+            "average_travel_hours": round(avg_travel, 2),
+            "median_travel_hours": round(median_travel, 2),
+            "max_travel_hours": round(max_travel, 2),
+            "min_travel_hours": round(min_travel, 2),
+            "attendee_travel_hours": {city: round(hours, 2) for city, hours in attendee_travel_hours.items()}
         }
 
         return output
