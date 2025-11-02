@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from datetime import datetime
 import json
-from data import load_schedule, load_emissions, join_flights_with_emissions, stream_joined_flights
+from data import load_schedule, load_emissions, join_flights_with_emissions, stream_joined_flights, get_connecting_flights, stream_connecting_flights
 
 
 app = FastAPI(title="forty-one", version="0.1.0")
@@ -22,10 +22,11 @@ def health_check():
 
 @app.get("/flights")
 def get_flights(
-    start_date: str = "2025-05-01",
-    end_date: str = "2025-05-31",
+    start_date: str = "2024-01-01",
+    end_date: str = "2024-01-31",
     depart_airport: str = None,
     arrival_airport: str = None,
+    max_emissions: float = None,
 ):
     """
     Get joined flight and emissions data.
@@ -35,6 +36,7 @@ def get_flights(
         end_date: End date in format YYYY-MM-DD
         depart_airport: Optional filter by departure airport (DEPAPT)
         arrival_airport: Optional filter by arrival airport (ARRAPT)
+        max_emissions: Optional maximum CO2 emissions in tonnes
 
     Returns:
         JSON array with flight and emissions data
@@ -48,8 +50,11 @@ def get_flights(
         schedule = load_schedule(start, end)
         emissions = load_emissions()
 
+        # Convert max_emissions to float if provided
+        max_emissions_val = float(max_emissions) if max_emissions is not None else None
+
         # Join the data
-        df = join_flights_with_emissions(schedule, emissions)
+        df = join_flights_with_emissions(schedule, emissions, max_emissions=max_emissions_val)
 
         # Apply optional airport filters
         if depart_airport:
@@ -67,11 +72,12 @@ def get_flights(
 
 @app.get("/flights/stream")
 def stream_flights(
-    start_date: str = "2025-05-01",
-    end_date: str = "2025-05-31",
+    start_date: str = "2024-01-01",
+    end_date: str = "2024-01-31",
     format: str = "ndjson",
     depart_airport: str = None,
     arrival_airport: str = None,
+    max_emissions: float = None,
 ):
     """
     Stream joined flight and emissions data.
@@ -82,6 +88,7 @@ def stream_flights(
         format: Output format - 'ndjson' (default) or 'json'
         depart_airport: Optional filter by departure airport (DEPAPT)
         arrival_airport: Optional filter by arrival airport (ARRAPT)
+        max_emissions: Optional maximum CO2 emissions in tonnes
 
     Returns:
         StreamingResponse with data in requested format
@@ -97,8 +104,11 @@ def stream_flights(
             schedule = load_schedule(start, end)
             emissions = load_emissions()
 
+            # Convert max_emissions to float if provided
+            max_emissions_val = float(max_emissions) if max_emissions is not None else None
+
             # Stream joined data
-            for row in stream_joined_flights(schedule, emissions):
+            for row in stream_joined_flights(schedule, emissions, max_emissions=max_emissions_val):
                 # Apply optional airport filters
                 if depart_airport and row["DEPAPT"] != depart_airport.upper():
                     continue
@@ -119,10 +129,13 @@ def stream_flights(
             schedule = load_schedule(start, end)
             emissions = load_emissions()
 
+            # Convert max_emissions to float if provided
+            max_emissions_val = float(max_emissions) if max_emissions is not None else None
+
             # Stream as JSON array
             yield "["
             first = True
-            for row in stream_joined_flights(schedule, emissions):
+            for row in stream_joined_flights(schedule, emissions, max_emissions=max_emissions_val):
                 # Apply optional airport filters
                 if depart_airport and row["DEPAPT"] != depart_airport.upper():
                     continue
@@ -133,6 +146,148 @@ def stream_flights(
                     yield ","
                 first = False
                 yield json.dumps(row)
+            yield "]"
+        except Exception as e:
+            yield json.dumps({"error": str(e)})
+
+    if format.lower() == "json":
+        return StreamingResponse(generate_json(), media_type="application/json")
+    else:
+        return StreamingResponse(generate_ndjson(), media_type="application/x-ndjson")
+
+
+@app.get("/connecting-flights")
+def get_connecting(
+    start_date: str = "2024-01-01",
+    end_date: str = "2024-01-31",
+    origin: str = None,
+    destination: str = None,
+    limit: int = 10,
+    max_emissions: float = 300,
+):
+    """
+    Get connecting flights from origin to destination within 40 mins to 5 hours connection time, with emissions data.
+
+    Args:
+        start_date: Start date in format YYYY-MM-DD
+        end_date: End date in format YYYY-MM-DD
+        origin: Origin airport code (e.g., 'JFK')
+        destination: Destination airport code (e.g., 'LAX')
+        limit: Maximum number of connections to return (default 10)
+        max_emissions: Maximum total CO2 emissions in tonnes (default 300)
+
+    Returns:
+        JSON array with connecting flight pairs including emissions
+    """
+    try:
+        if not origin or not destination:
+            return {"error": "origin and destination airports are required"}
+
+        # Parse dates
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+
+        # Load schedule and emissions
+        schedule = load_schedule(start, end)
+        emissions = load_emissions()
+
+        # Convert max_emissions to float if provided
+        max_emissions_val = float(max_emissions) if max_emissions is not None else None
+
+        # Get connecting flights
+        connections = get_connecting_flights(
+            schedule, emissions, origin, destination,
+            limit=limit, max_emissions=max_emissions_val
+        )
+
+        # Return connections
+        return {"connections": connections, "count": len(connections)}
+    except ValueError as e:
+        return {"error": f"Invalid format: {str(e)}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/connecting-flights/stream")
+def stream_connecting(
+    start_date: str = "2024-01-01",
+    end_date: str = "2024-01-31",
+    origin: str = None,
+    destination: str = None,
+    format: str = "ndjson",
+    limit: int = 10,
+    max_emissions: float = 300,
+):
+    """
+    Stream connecting flights from origin to destination within 40 mins to 5 hours connection time, with emissions data.
+
+    Args:
+        start_date: Start date in format YYYY-MM-DD
+        end_date: End date in format YYYY-MM-DD
+        origin: Origin airport code (e.g., 'JFK')
+        destination: Destination airport code (e.g., 'LAX')
+        format: Output format - 'ndjson' (default) or 'json'
+        limit: Maximum number of connections to stream (default 10)
+        max_emissions: Maximum total CO2 emissions in tonnes (default 300)
+
+    Returns:
+        StreamingResponse with connecting flight pairs including emissions
+    """
+
+    def generate_ndjson():
+        try:
+            if not origin or not destination:
+                yield json.dumps({"error": "origin and destination airports are required"}) + "\n"
+                return
+
+            # Parse dates
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+
+            # Load schedule and emissions
+            schedule = load_schedule(start, end)
+            emissions = load_emissions()
+
+            # Convert max_emissions to float if provided
+            max_emissions_val = float(max_emissions) if max_emissions is not None else None
+
+            # Stream connecting flights
+            for connection in stream_connecting_flights(
+                schedule, emissions, origin, destination,
+                limit=limit, max_emissions=max_emissions_val
+            ):
+                yield json.dumps(connection) + "\n"
+        except Exception as e:
+            yield json.dumps({"error": str(e)}) + "\n"
+
+    def generate_json():
+        try:
+            if not origin or not destination:
+                yield json.dumps({"error": "origin and destination airports are required"})
+                return
+
+            # Parse dates
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+
+            # Load schedule and emissions
+            schedule = load_schedule(start, end)
+            emissions = load_emissions()
+
+            # Convert max_emissions to float if provided
+            max_emissions_val = float(max_emissions) if max_emissions is not None else None
+
+            # Stream as JSON array
+            yield "["
+            first = True
+            for connection in stream_connecting_flights(
+                schedule, emissions, origin, destination,
+                limit=limit, max_emissions=max_emissions_val
+            ):
+                if not first:
+                    yield ","
+                first = False
+                yield json.dumps(connection)
             yield "]"
         except Exception as e:
             yield json.dumps({"error": str(e)})
