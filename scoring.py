@@ -93,8 +93,37 @@ def score_meeting_location(
                         flights_data.append(flight)
 
                 if flights_data:
-                    # Calculate max travel time from flights
-                    travel_times = [f.get('max_travel_hours', 0) for f in flights_data]
+                    # Calculate max travel time from flights using ELPTIM (elapsed time in minutes)
+                    travel_times = []
+                    for f in flights_data:
+                        # Try ELPTIM first (elapsed time in minutes), convert to hours
+                        if 'ELPTIM' in f and f.get('ELPTIM'):
+                            elptim = f.get('ELPTIM', 0)
+                            # Handle both string and numeric ELPTIM
+                            if isinstance(elptim, str):
+                                try:
+                                    elptim = int(elptim)
+                                except (ValueError, TypeError):
+                                    elptim = 0
+                            travel_times.append(elptim / 60.0)
+                        # Fallback: calculate from DEPTIM and ARRTIM
+                        elif 'DEPTIM' in f and 'ARRTIM' in f:
+                            try:
+                                dep_time = f.get('DEPTIM', 0)
+                                arr_time = f.get('ARRTIM', 0)
+                                # Handle both string and numeric times
+                                if isinstance(dep_time, str):
+                                    dep_time = int(dep_time)
+                                if isinstance(arr_time, str):
+                                    arr_time = int(arr_time)
+                                # Calculate duration, handling day wraparound
+                                duration_mins = arr_time - dep_time
+                                if duration_mins < 0:
+                                    duration_mins += 1440  # Add 24 hours in minutes
+                                travel_times.append(duration_mins / 60.0)
+                            except (ValueError, TypeError):
+                                pass  # Skip this flight if conversion fails
+
                     max_travel = max(travel_times) if travel_times else 0
                     attendee_travel_times[candidate_code][attendee_city] = max_travel
                     route_options.append({'flights': flights_data})
@@ -157,19 +186,46 @@ def score_meeting_location(
             if 'flights' in all_route_options[idx][0]:
                 # Use actual flight data
                 flights = all_route_options[idx][0]['flights']
-                travel_times = [f.get('max_travel_hours', 0) for f in flights]
-                co2_values = [f.get('estimated_co2_total_tonnes', 0) for f in flights]
+
+                # Extract travel times from ELPTIM or calculate from DEPTIM/ARRTIM
+                travel_times = []
+                for f in flights:
+                    if 'ELPTIM' in f and f.get('ELPTIM'):
+                        elptim = f.get('ELPTIM', 0)
+                        if isinstance(elptim, str):
+                            try:
+                                elptim = int(elptim)
+                            except (ValueError, TypeError):
+                                elptim = 0
+                        travel_times.append(elptim / 60.0)  # Convert to hours
+                    elif 'DEPTIM' in f and 'ARRTIM' in f:
+                        try:
+                            dep_time = f.get('DEPTIM', 0)
+                            arr_time = f.get('ARRTIM', 0)
+                            if isinstance(dep_time, str):
+                                dep_time = int(dep_time)
+                            if isinstance(arr_time, str):
+                                arr_time = int(arr_time)
+                            duration_mins = arr_time - dep_time
+                            if duration_mins < 0:
+                                duration_mins += 1440
+                            travel_times.append(duration_mins / 60.0)
+                        except (ValueError, TypeError):
+                            pass
+
+                # Extract CO2 emissions
+                co2_values = [f.get('ESTIMATED_CO2_TOTAL_TONNES', 0) for f in flights]
 
                 max_travel = max(travel_times) if travel_times else 0
                 avg_co2 = sum(co2_values) / len(co2_values) if co2_values else 0
 
                 # Normalize to 0-1 scale
-                travel_score = min(max_travel / (time_limit_hours * 60), 1.0)
+                travel_score = min(max_travel / time_limit_hours, 1.0) if time_limit_hours > 0 else 0
                 co2_score = min(avg_co2 / 500.0, 1.0)  # Assume 500 tonnes is worst case
             else:
                 # Use haversine estimate
                 max_travel = all_route_options[idx][0].get('max_travel_hours', 0)
-                travel_score = min(max_travel / time_limit_hours, 1.0)
+                travel_score = min(max_travel / time_limit_hours, 1.0) if time_limit_hours > 0 else 0
                 co2_score = 0.5  # Neutral when no flight data
 
             # Weighted composite score
