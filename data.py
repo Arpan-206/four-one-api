@@ -75,8 +75,13 @@ def _load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
     # Concatenate all frames
     combined = pl.concat(frames)
 
-    # Drop rows with any nulls
-    combined = combined.drop_nulls()
+    # Drop rows where key fields are null
+    combined = combined.filter(
+        pl.col("CARRIER_CD_ICAO").is_not_null()
+        & pl.col("FLTNO").is_not_null()
+        & pl.col("DEPAPT").is_not_null()
+        & pl.col("ARRAPT").is_not_null()
+    )
 
     return combined
 
@@ -101,8 +106,11 @@ def _load_emissions() -> pl.LazyFrame:
         print(f"Warning: Could not select columns {columns}: {e}")
         return pl.LazyFrame()
 
-    # Drop rows with any nulls
-    df = df.drop_nulls()
+    # Drop rows where key identifier fields are null
+    df = df.filter(
+        pl.col("CARRIER_CODE").is_not_null()
+        & pl.col("FLIGHT_NUMBER").is_not_null()
+    )
 
     return df
 
