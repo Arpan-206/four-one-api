@@ -75,35 +75,8 @@ def _load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
     # Concatenate all frames
     combined = pl.concat(frames)
 
-    # Fill numeric nulls with mean of that column
-    # Convert string numeric columns to float first
-    numeric_cols = [
-        ("DEPTIM", pl.Int64),
-        ("ARRTIM", pl.Int64),
-        ("ARRDAY", pl.Int64),
-        ("DISTANCE", pl.Float64),
-    ]
-
-    # Fill nulls with mean for numeric columns
-    for col, dtype in numeric_cols:
-        if col in columns:
-            try:
-                combined = combined.with_columns(
-                    pl.col(col).cast(dtype)
-                    .fill_null(pl.col(col).cast(dtype).mean())
-                    .alias(col)
-                )
-            except:
-                # If conversion fails, just keep original
-                pass
-
-    # For string columns, drop rows that have nulls in key fields
-    combined = combined.filter(
-        pl.col("CARRIER_CD_ICAO").is_not_null()
-        & pl.col("FLTNO").is_not_null()
-        & pl.col("DEPAPT").is_not_null()
-        & pl.col("ARRAPT").is_not_null()
-    )
+    # Drop rows with any nulls
+    combined = combined.drop_nulls()
 
     return combined
 
@@ -128,32 +101,8 @@ def _load_emissions() -> pl.LazyFrame:
         print(f"Warning: Could not select columns {columns}: {e}")
         return pl.LazyFrame()
 
-    # Drop rows with null in key identifier columns first
-    df = df.filter(
-        pl.col("CARRIER_CODE").is_not_null()
-        & pl.col("FLIGHT_NUMBER").is_not_null()
-    )
-
-    # Fill numeric nulls with mean for emissions data
-    numeric_cols = [
-        "ESTIMATED_FUEL_BURN_TOTAL_TONNES",
-        "ESTIMATED_CO2_TOTAL_TONNES",
-    ]
-
-    for col in numeric_cols:
-        if col in columns:
-            try:
-                # Cast to float, calculate mean, and fill nulls
-                df = df.with_columns(
-                    pl.col(col)
-                    .cast(pl.Float64)
-                    .fill_null(pl.col(col).cast(pl.Float64).mean())
-                    .alias(col)
-                )
-            except Exception as e:
-                # If it fails, just keep the original
-                print(f"Warning: Could not fill nulls for {col}: {e}")
-                pass
+    # Drop rows with any nulls
+    df = df.drop_nulls()
 
     return df
 
