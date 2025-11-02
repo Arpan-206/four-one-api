@@ -2,12 +2,13 @@ from fastapi import FastAPI, Body
 from fastapi.responses import StreamingResponse
 from datetime import datetime, timedelta
 import json
+import polars as pl
 from data import load_schedule, load_emissions, join_flights_with_emissions, stream_joined_flights, get_connecting_flights, stream_connecting_flights
 from candidates import get_candidate_cities, get_nearest_cities, get_candidates_with_custom, get_airport_code_by_city, get_all_candidate_airport_codes
 from filter import get_filtered_candidates, build_attendee_candidates
 
 
-app = FastAPI(title="forty-one", version="0.1.0")
+app = FastAPI(title="forty-one", version="0.1.0", root_path="/api")
 
 
 @app.get("/")
@@ -60,12 +61,13 @@ def get_flights(
         )
 
         if depart_airport:
-            df = df.filter(df["DEPAPT"] == depart_airport.upper())
+            df = df.filter(pl.col("DEPAPT") == depart_airport.upper())
         if arrival_airport:
-            df = df.filter(df["ARRAPT"] == arrival_airport.upper())
+            df = df.filter(pl.col("ARRAPT") == arrival_airport.upper())
 
-        count = len(df)
-        return {"count": count, "message": f"Use /flights/stream endpoint to retrieve {count} flights without memory issues"}
+        # Collect the lazy frame and return all data
+        df_collected = df.collect()
+        return {"count": df_collected.height, "flights": df_collected.to_dicts()}
     except ValueError as e:
         return {"error": f"Invalid date format: {str(e)}"}
     except Exception as e:
