@@ -75,7 +75,7 @@ def _load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
         if col in columns:
             try:
                 combined = combined.with_columns(
-                    pl.col(col).cast(dtype, allow_null=True)
+                    pl.col(col).cast(dtype)
                     .fill_null(pl.col(col).cast(dtype).mean())
                     .alias(col)
                 )
@@ -126,7 +126,7 @@ def _load_emissions() -> pl.LazyFrame:
                 # Cast to float, calculate mean, and fill nulls
                 df = df.with_columns(
                     pl.col(col)
-                    .cast(pl.Float64, allow_null=True)
+                    .cast(pl.Float64)
                     .fill_null(pl.col(col).cast(pl.Float64).mean())
                     .alias(col)
                 )
@@ -162,7 +162,7 @@ def join_schedule_and_emissions(
 
     # Cast FLTNO to int64 to match FLIGHT_NUMBER type
     schedule_df = schedule_df.with_columns(
-        pl.col("FLTNO").cast(pl.Int64, allow_null=True)
+        pl.col("FLTNO").cast(pl.Int64)
     )
 
     # Join on carrier code and flight number
