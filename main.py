@@ -27,6 +27,7 @@ def get_flights(
     depart_airport: str = None,
     arrival_airport: str = None,
     max_emissions: float = None,
+    max_flight_time: int = None,
 ):
     """
     Get joined flight and emissions data.
@@ -37,6 +38,7 @@ def get_flights(
         depart_airport: Optional filter by departure airport (DEPAPT)
         arrival_airport: Optional filter by arrival airport (ARRAPT)
         max_emissions: Optional maximum CO2 emissions in tonnes
+        max_flight_time: Optional maximum flight time in minutes
 
     Returns:
         JSON array with flight and emissions data
@@ -54,7 +56,11 @@ def get_flights(
         max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
         # Join the data
-        df = join_flights_with_emissions(schedule, emissions, max_emissions=max_emissions_val)
+        df = join_flights_with_emissions(
+            schedule, emissions,
+            max_emissions=max_emissions_val,
+            max_flight_time=max_flight_time
+        )
 
         # Apply optional airport filters
         if depart_airport:
@@ -78,6 +84,7 @@ def stream_flights(
     depart_airport: str = None,
     arrival_airport: str = None,
     max_emissions: float = None,
+    max_flight_time: int = None,
 ):
     """
     Stream joined flight and emissions data.
@@ -89,6 +96,7 @@ def stream_flights(
         depart_airport: Optional filter by departure airport (DEPAPT)
         arrival_airport: Optional filter by arrival airport (ARRAPT)
         max_emissions: Optional maximum CO2 emissions in tonnes
+        max_flight_time: Optional maximum flight time in minutes
 
     Returns:
         StreamingResponse with data in requested format
@@ -108,7 +116,11 @@ def stream_flights(
             max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
             # Stream joined data
-            for row in stream_joined_flights(schedule, emissions, max_emissions=max_emissions_val):
+            for row in stream_joined_flights(
+                schedule, emissions,
+                max_emissions=max_emissions_val,
+                max_flight_time=max_flight_time
+            ):
                 # Apply optional airport filters
                 if depart_airport and row["DEPAPT"] != depart_airport.upper():
                     continue
@@ -135,7 +147,11 @@ def stream_flights(
             # Stream as JSON array
             yield "["
             first = True
-            for row in stream_joined_flights(schedule, emissions, max_emissions=max_emissions_val):
+            for row in stream_joined_flights(
+                schedule, emissions,
+                max_emissions=max_emissions_val,
+                max_flight_time=max_flight_time
+            ):
                 # Apply optional airport filters
                 if depart_airport and row["DEPAPT"] != depart_airport.upper():
                     continue
@@ -164,6 +180,7 @@ def get_connecting(
     destination: str = None,
     limit: int = 10,
     max_emissions: float = 300,
+    max_journey_time: int = None,
 ):
     """
     Get connecting flights from origin to destination within 40 mins to 5 hours connection time, with emissions data.
@@ -175,6 +192,7 @@ def get_connecting(
         destination: Destination airport code (e.g., 'LAX')
         limit: Maximum number of connections to return (default 10)
         max_emissions: Maximum total CO2 emissions in tonnes (default 300)
+        max_journey_time: Maximum total journey time in minutes (optional)
 
     Returns:
         JSON array with connecting flight pairs including emissions
@@ -197,7 +215,8 @@ def get_connecting(
         # Get connecting flights
         connections = get_connecting_flights(
             schedule, emissions, origin, destination,
-            limit=limit, max_emissions=max_emissions_val
+            limit=limit, max_emissions=max_emissions_val,
+            max_journey_time=max_journey_time
         )
 
         # Return connections
@@ -217,6 +236,7 @@ def stream_connecting(
     format: str = "ndjson",
     limit: int = 10,
     max_emissions: float = 300,
+    max_journey_time: int = None,
 ):
     """
     Stream connecting flights from origin to destination within 40 mins to 5 hours connection time, with emissions data.
@@ -229,6 +249,7 @@ def stream_connecting(
         format: Output format - 'ndjson' (default) or 'json'
         limit: Maximum number of connections to stream (default 10)
         max_emissions: Maximum total CO2 emissions in tonnes (default 300)
+        max_journey_time: Maximum total journey time in minutes (optional)
 
     Returns:
         StreamingResponse with connecting flight pairs including emissions
@@ -254,7 +275,8 @@ def stream_connecting(
             # Stream connecting flights
             for connection in stream_connecting_flights(
                 schedule, emissions, origin, destination,
-                limit=limit, max_emissions=max_emissions_val
+                limit=limit, max_emissions=max_emissions_val,
+                max_journey_time=max_journey_time
             ):
                 yield json.dumps(connection) + "\n"
         except Exception as e:
@@ -282,7 +304,8 @@ def stream_connecting(
             first = True
             for connection in stream_connecting_flights(
                 schedule, emissions, origin, destination,
-                limit=limit, max_emissions=max_emissions_val
+                limit=limit, max_emissions=max_emissions_val,
+                max_journey_time=max_journey_time
             ):
                 if not first:
                     yield ","

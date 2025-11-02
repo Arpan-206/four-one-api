@@ -37,6 +37,7 @@ def join_flights_with_emissions(
     schedule: pl.LazyFrame,
     emissions: pl.LazyFrame,
     max_emissions: float = None,
+    max_flight_time: int = None,
 ) -> pl.DataFrame:
     """
     Join schedule and emissions data on CARRIER and FLTNO.
@@ -45,6 +46,7 @@ def join_flights_with_emissions(
         schedule: Schedule lazy frame
         emissions: Emissions lazy frame
         max_emissions: Maximum CO2 emissions in tonnes to include (optional)
+        max_flight_time: Maximum flight time in minutes (optional)
 
     Returns:
         DataFrame with joined data sorted by CO2 emissions, keeping key fields and important data
@@ -78,6 +80,23 @@ def join_flights_with_emissions(
     if max_emissions is not None:
         result = result.filter(pl.col("ESTIMATED_CO2_TOTAL_TONNES") <= max_emissions)
 
+    # Filter by max flight time if specified
+    if max_flight_time is not None:
+        # Calculate flight time as arrival time - departure time (in minutes)
+        result = result.with_columns(
+            flight_time_mins=(
+                (pl.col("ARRTIM").cast(pl.Int32) - pl.col("DEPTIM").cast(pl.Int32)).fill_null(0)
+            )
+        )
+        # Handle case where arrival is next day
+        result = result.with_columns(
+            flight_time_mins=pl.when(pl.col("flight_time_mins") < 0)
+                .then(pl.col("flight_time_mins") + 24 * 60)
+                .otherwise(pl.col("flight_time_mins"))
+        )
+        result = result.filter(pl.col("flight_time_mins") <= max_flight_time)
+        result = result.drop("flight_time_mins")
+
     result = result.sort("ESTIMATED_CO2_TOTAL_TONNES").collect()
 
     return result
@@ -87,6 +106,7 @@ def stream_joined_flights(
     schedule: pl.LazyFrame,
     emissions: pl.LazyFrame,
     max_emissions: float = None,
+    max_flight_time: int = None,
 ):
     """
     Stream joined flight and emissions data row by row using streaming engine.
@@ -95,6 +115,7 @@ def stream_joined_flights(
         schedule: Schedule lazy frame
         emissions: Emissions lazy frame
         max_emissions: Maximum CO2 emissions in tonnes to include (optional)
+        max_flight_time: Maximum flight time in minutes (optional)
 
     Yields:
         Dictionary for each row of joined data
@@ -128,6 +149,23 @@ def stream_joined_flights(
     if max_emissions is not None:
         joined_lazy = joined_lazy.filter(pl.col("ESTIMATED_CO2_TOTAL_TONNES") <= max_emissions)
 
+    # Filter by max flight time if specified
+    if max_flight_time is not None:
+        # Calculate flight time as arrival time - departure time (in minutes)
+        joined_lazy = joined_lazy.with_columns(
+            flight_time_mins=(
+                (pl.col("ARRTIM").cast(pl.Int32) - pl.col("DEPTIM").cast(pl.Int32)).fill_null(0)
+            )
+        )
+        # Handle case where arrival is next day
+        joined_lazy = joined_lazy.with_columns(
+            flight_time_mins=pl.when(pl.col("flight_time_mins") < 0)
+                .then(pl.col("flight_time_mins") + 24 * 60)
+                .otherwise(pl.col("flight_time_mins"))
+        )
+        joined_lazy = joined_lazy.filter(pl.col("flight_time_mins") <= max_flight_time)
+        joined_lazy = joined_lazy.drop("flight_time_mins")
+
     # Stream the results using streaming engine - processes incrementally without materializing entire dataset
     for row in joined_lazy.collect(streaming=True).iter_rows(named=True):
         yield row
@@ -142,6 +180,7 @@ def get_connecting_flights(
     max_connection_mins: int = 300,
     limit: int = 10,
     max_emissions: float = 300,
+    max_journey_time: int = None,
 ):
     """
     Find connecting flights from origin to destination via a connecting airport, with emissions data.
@@ -155,6 +194,7 @@ def get_connecting_flights(
         max_connection_mins: Maximum connection time in minutes (default 300 = 5 hours)
         limit: Maximum number of connections to return (default 10)
         max_emissions: Maximum total CO2 emissions in tonnes (default 300)
+        max_journey_time: Maximum total journey time in minutes (optional)
 
     Returns:
         List of connections with flights and emissions data
@@ -227,6 +267,10 @@ def get_connecting_flights(
             if journey_time_mins < 0:
                 journey_time_mins += 24 * 60
 
+            # Filter out connections with too much journey time
+            if max_journey_time is not None and journey_time_mins > max_journey_time:
+                continue
+
             connection = {
                 "first_flight": first,
                 "second_flight": second,
@@ -249,6 +293,7 @@ def stream_connecting_flights(
     max_connection_mins: int = 300,
     limit: int = 10,
     max_emissions: float = 300,
+    max_journey_time: int = None,
 ):
     """
     Stream connecting flights from origin to destination via a connecting airport, with emissions data.
@@ -262,6 +307,7 @@ def stream_connecting_flights(
         max_connection_mins: Maximum connection time in minutes (default 300 = 5 hours)
         limit: Maximum number of connections to yield (default 10)
         max_emissions: Maximum total CO2 emissions in tonnes (default 300)
+        max_journey_time: Maximum total journey time in minutes (optional)
 
     Yields:
         Dictionary with first_flight and second_flight for each connection
@@ -333,6 +379,10 @@ def stream_connecting_flights(
             # Handle case where arrival time is next day
             if journey_time_mins < 0:
                 journey_time_mins += 24 * 60
+
+            # Filter out connections with too much journey time
+            if max_journey_time is not None and journey_time_mins > max_journey_time:
+                continue
 
             connection = {
                 "first_flight": first,
