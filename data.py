@@ -76,6 +76,51 @@ def join_flights_with_emissions(
     return result
 
 
+def stream_joined_flights(
+    schedule: pl.LazyFrame,
+    emissions: pl.LazyFrame,
+):
+    """
+    Stream joined flight and emissions data row by row.
+
+    Args:
+        schedule: Schedule lazy frame
+        emissions: Emissions lazy frame
+
+    Yields:
+        Dictionary for each row of joined data
+    """
+    joined_lazy = (
+        schedule.join(
+            emissions,
+            left_on=["CARRIER", "FLTNO"],
+            right_on=["CARRIER_CODE", "FLIGHT_NUMBER"],
+            how="inner"
+        )
+        .select([
+            # Join keys and identifying fields
+            pl.col("CARRIER"),
+            pl.col("FLTNO"),
+            pl.col("FLIGHT_DATE"),
+            # Flight information
+            pl.col("DEPAPT"),
+            pl.col("ARRAPT"),
+            pl.col("DEPTIM"),
+            pl.col("ARRTIM"),
+            pl.col("DISTANCE"),
+            # Emissions data (very important)
+            pl.col("ESTIMATED_FUEL_BURN_TOTAL_TONNES"),
+            pl.col("ESTIMATED_CO2_TOTAL_TONNES"),
+        ])
+        .drop_nulls()
+        .sort("ESTIMATED_CO2_TOTAL_TONNES")
+    )
+
+    # Stream the results
+    for row in joined_lazy.collect().to_dicts():
+        yield row
+
+
 if __name__ == "__main__":
     from rich import print
 

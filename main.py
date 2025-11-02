@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from datetime import datetime
 import json
-from data import join_schedule_and_emissions, find_connecting_flights
+from data import load_schedule, load_emissions, join_flights_with_emissions, stream_joined_flights
 
 
 app = FastAPI(title="forty-one", version="0.1.0")
@@ -22,86 +22,43 @@ def health_check():
 
 @app.get("/flights")
 def get_flights(
-    start_airport: str,
-    end_airport: str,
     start_date: str = "2025-05-01",
     end_date: str = "2025-05-31",
+    depart_airport: str = None,
+    arrival_airport: str = None,
 ):
     """
-    Get flight data with emissions information (non-streaming).
+    Get joined flight and emissions data.
 
     Args:
-        start_airport: Departure airport code (DEPAPT, e.g., 'LIS') - REQUIRED
-        end_airport: Arrival airport code (ARRAPT, e.g., 'CGN') - REQUIRED
         start_date: Start date in format YYYY-MM-DD
         end_date: End date in format YYYY-MM-DD
+        depart_airport: Optional filter by departure airport (DEPAPT)
+        arrival_airport: Optional filter by arrival airport (ARRAPT)
 
     Returns:
-        JSON array with flight data
+        JSON array with flight and emissions data
     """
     try:
         # Parse dates
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
 
-        # Load and join data with mandatory airport filters
-        df = join_schedule_and_emissions(
-            start, end, start_airport.upper(), end_airport.upper()
-        )
+        # Load schedule and emissions
+        schedule = load_schedule(start, end)
+        emissions = load_emissions()
+
+        # Join the data
+        df = join_flights_with_emissions(schedule, emissions)
+
+        # Apply optional airport filters
+        if depart_airport:
+            df = df.filter(df["DEPAPT"] == depart_airport.upper())
+        if arrival_airport:
+            df = df.filter(df["ARRAPT"] == arrival_airport.upper())
 
         # Convert to list of dicts and return as JSON
         return {"flights": df.to_dicts(), "count": len(df)}
-    except ValueError as e:
-        return {"error": f"Invalid date format: {str(e)}"}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/connections")
-def get_connecting_flights(
-    start_airport: str,
-    end_airport: str,
-    start_date: str = "2025-05-01",
-    end_date: str = "2025-05-31",
-    min_wait: int = 40,
-    max_wait: int = 240,
-):
-    """
-    Get connecting flights between two airports with specified wait time.
-
-    Args:
-        start_airport: Starting airport code (DEPAPT, e.g., 'LIS') - REQUIRED
-        end_airport: Final destination airport code (ARRAPT, e.g., 'AMS') - REQUIRED
-        start_date: Start date in format YYYY-MM-DD
-        end_date: End date in format YYYY-MM-DD
-        min_wait: Minimum connection wait time in minutes (default 40)
-        max_wait: Maximum connection wait time in minutes (default 240 = 4 hours)
-
-    Returns:
-        JSON array with connecting flight pairs and emissions data
-    """
-    try:
-        # Parse dates
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d")
-
-        # Find connecting flights
-        connections_df = find_connecting_flights(
-            start_airport.upper(),
-            end_airport.upper(),
-            start,
-            end,
-            min_wait,
-            max_wait,
-        )
-
-        if len(connections_df) == 0:
-            return {"connections": [], "count": 0}
-
-        # Convert to dicts
-        connections = connections_df.to_dicts()
-
-        return {"connections": connections, "count": len(connections)}
     except ValueError as e:
         return {"error": f"Invalid date format: {str(e)}"}
     except Exception as e:
@@ -113,18 +70,18 @@ def stream_flights(
     start_date: str = "2025-05-01",
     end_date: str = "2025-05-31",
     format: str = "ndjson",
-    start_airport: str = None,
-    end_airport: str = None,
+    depart_airport: str = None,
+    arrival_airport: str = None,
 ):
     """
-    Stream flight data with emissions information.
+    Stream joined flight and emissions data.
 
     Args:
         start_date: Start date in format YYYY-MM-DD
         end_date: End date in format YYYY-MM-DD
         format: Output format - 'ndjson' (default) or 'json'
-        start_airport: Optional filter by departure airport code (DEPAPT, e.g., 'LHR')
-        end_airport: Optional filter by arrival airport code (ARRAPT, e.g., 'BOM')
+        depart_airport: Optional filter by departure airport (DEPAPT)
+        arrival_airport: Optional filter by arrival airport (ARRAPT)
 
     Returns:
         StreamingResponse with data in requested format
@@ -136,11 +93,18 @@ def stream_flights(
             start = datetime.strptime(start_date, "%Y-%m-%d")
             end = datetime.strptime(end_date, "%Y-%m-%d")
 
-            # Load and join data with airport filters
-            df = join_schedule_and_emissions(start, end, start_airport, end_airport)
+            # Load schedule and emissions
+            schedule = load_schedule(start, end)
+            emissions = load_emissions()
 
-            # Stream each row as NDJSON
-            for row in df.to_dicts():
+            # Stream joined data
+            for row in stream_joined_flights(schedule, emissions):
+                # Apply optional airport filters
+                if depart_airport and row["DEPAPT"] != depart_airport.upper():
+                    continue
+                if arrival_airport and row["ARRAPT"] != arrival_airport.upper():
+                    continue
+
                 yield json.dumps(row) + "\n"
         except Exception as e:
             yield json.dumps({"error": str(e)}) + "\n"
@@ -151,15 +115,23 @@ def stream_flights(
             start = datetime.strptime(start_date, "%Y-%m-%d")
             end = datetime.strptime(end_date, "%Y-%m-%d")
 
-            # Load and join data with airport filters
-            df = join_schedule_and_emissions(start, end, start_airport, end_airport)
+            # Load schedule and emissions
+            schedule = load_schedule(start, end)
+            emissions = load_emissions()
 
             # Stream as JSON array
             yield "["
-            rows = df.to_dicts()
-            for i, row in enumerate(rows):
-                if i > 0:
+            first = True
+            for row in stream_joined_flights(schedule, emissions):
+                # Apply optional airport filters
+                if depart_airport and row["DEPAPT"] != depart_airport.upper():
+                    continue
+                if arrival_airport and row["ARRAPT"] != arrival_airport.upper():
+                    continue
+
+                if not first:
                     yield ","
+                first = False
                 yield json.dumps(row)
             yield "]"
         except Exception as e:
