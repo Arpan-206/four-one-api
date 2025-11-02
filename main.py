@@ -64,7 +64,8 @@ def get_flights(
         if arrival_airport:
             df = df.filter(df["ARRAPT"] == arrival_airport.upper())
 
-        return {"flights": df.to_dicts(), "count": len(df)}
+        count = len(df)
+        return {"count": count, "message": f"Use /flights/stream endpoint to retrieve {count} flights without memory issues"}
     except ValueError as e:
         return {"error": f"Invalid date format: {str(e)}"}
     except Exception as e:

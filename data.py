@@ -97,8 +97,6 @@ def join_flights_with_emissions(
         result = result.filter(pl.col("flight_time_mins") <= max_flight_time)
         result = result.drop("flight_time_mins")
 
-    result = result.sort("ESTIMATED_CO2_TOTAL_TONNES").collect()
-
     return result
 
 
@@ -167,8 +165,8 @@ def stream_joined_flights(
         joined_lazy = joined_lazy.drop("flight_time_mins")
 
     # Stream the results using streaming engine - processes incrementally without materializing entire dataset
-    for row in joined_lazy.collect(streaming=True).iter_rows(named=True):
-        yield row
+    for row in joined_lazy.collect(engine="streaming").iter_rows(named=True):
+        yield dict(row)
 
 
 def get_connecting_flights(
@@ -229,8 +227,8 @@ def get_connecting_flights(
     )
 
     # Collect only what we need
-    first_flights = first_flights_lazy.collect()
-    second_flights = second_flights_lazy.collect()
+    first_flights = first_flights_lazy.collect(engine="streaming")
+    second_flights = second_flights_lazy.collect(engine="streaming")
 
     connections = []
 
@@ -342,7 +340,7 @@ def stream_connecting_flights(
     )
 
     # Only collect first flights (usually smaller set)
-    first_flights = first_flights_lazy.collect()
+    first_flights = first_flights_lazy.collect(engine="streaming")
 
     count = 0
     for first in first_flights.to_dicts():
@@ -360,7 +358,7 @@ def stream_connecting_flights(
             second_flights_lazy
             .filter(pl.col("DEPAPT") == first["ARRAPT"])
             .filter((pl.col("DEPTIM") >= min_depart) & (pl.col("DEPTIM") <= max_depart))
-            .collect()
+            .collect(engine="streaming")
         )
 
         for second in matching_second.to_dicts():
