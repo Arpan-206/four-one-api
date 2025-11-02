@@ -39,35 +39,103 @@ EMISSIONS_COLUMNS = {
 
 # We need to use scan_csv to lazily load the schedule files
 def _load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
-    """Load the schedule from the schedule directory, selecting only required columns and filtering out rows with NaN values."""
+    """Load the schedule from the schedule directory, selecting only required columns and filling nulls with mean."""
     columns = list(SCHEDULE_COLUMNS.values())
     frames = []
 
     current_date = start_date
     while current_date <= end_date:
-        # Skip weekends (Saturday=5, Sunday=6)
-        if current_date.weekday() not in [5, 6]:
-            path = os.path.join(SCHEDULE_DIR, f"{current_date.year}/{current_date.month:02d}/{current_date.day:02d}.csv")
-            if os.path.exists(path):
-                # Select required columns and drop rows with any NaN values in those columns
-                frames.append(
-                    pl.scan_csv(path, infer_schema_length=0)
-                    .select(columns)
-                    .drop_nulls()
-                )
+        # Include all days (removed weekend skip)
+        path = os.path.join(SCHEDULE_DIR, f"{current_date.year}/{current_date.month:02d}/{current_date.day:02d}.csv")
+        if os.path.exists(path):
+            # Select required columns
+            df = pl.scan_csv(path, infer_schema_length=0).select(columns)
+            frames.append(df)
 
         # Move to next day
         current_date += timedelta(days=1)
 
-    return pl.concat(frames) if frames else pl.LazyFrame()
+    if not frames:
+        return pl.LazyFrame()
+
+    # Concatenate all frames
+    combined = pl.concat(frames)
+
+    # Fill numeric nulls with mean of that column
+    # Convert string numeric columns to float first
+    numeric_cols = [
+        ("DEPTIM", pl.Int64),
+        ("ARRTIM", pl.Int64),
+        ("ARRDAY", pl.Int64),
+        ("DISTANCE", pl.Float64),
+    ]
+
+    # Fill nulls with mean for numeric columns
+    for col, dtype in numeric_cols:
+        if col in columns:
+            try:
+                combined = combined.with_columns(
+                    pl.col(col).cast(dtype, allow_null=True)
+                    .fill_null(pl.col(col).cast(dtype).mean())
+                    .alias(col)
+                )
+            except:
+                # If conversion fails, just keep original
+                pass
+
+    # For string columns, drop rows that have nulls in key fields
+    combined = combined.filter(
+        pl.col("CARRIER_CD_ICAO").is_not_null()
+        & pl.col("FLTNO").is_not_null()
+        & pl.col("DEPAPT").is_not_null()
+        & pl.col("ARRAPT").is_not_null()
+    )
+
+    return combined
 
 
 def _load_emissions() -> pl.LazyFrame:
-    """Load the emissions from the emissions file, selecting required columns and filtering out rows with missing CO2 data."""
+    """Load the emissions from the emissions file, selecting required columns and filling nulls with mean."""
     columns = list(EMISSIONS_COLUMNS.values())
-    df = pl.scan_csv(EMISSIONS_FILE, infer_schema_length=0)
-    # Select required columns and filter out rows with null CO2 emissions
-    return df.select(columns).drop_nulls()
+
+    # Load CSV with proper schema inference
+    df = pl.scan_csv(EMISSIONS_FILE, infer_schema_length=10000)
+
+    # Select required columns
+    try:
+        df = df.select(columns)
+    except Exception as e:
+        print(f"Warning: Could not select columns {columns}: {e}")
+        return pl.LazyFrame()
+
+    # Drop rows with null in key identifier columns first
+    df = df.filter(
+        pl.col("CARRIER_CODE").is_not_null()
+        & pl.col("FLIGHT_NUMBER").is_not_null()
+    )
+
+    # Fill numeric nulls with mean for emissions data
+    numeric_cols = [
+        "ESTIMATED_FUEL_BURN_TOTAL_TONNES",
+        "ESTIMATED_CO2_TOTAL_TONNES",
+    ]
+
+    for col in numeric_cols:
+        if col in columns:
+            try:
+                # Cast to float, calculate mean, and fill nulls
+                df = df.with_columns(
+                    pl.col(col)
+                    .cast(pl.Float64, allow_null=True)
+                    .fill_null(pl.col(col).cast(pl.Float64).mean())
+                    .alias(col)
+                )
+            except Exception as e:
+                # If it fails, just keep the original
+                print(f"Warning: Could not fill nulls for {col}: {e}")
+                pass
+
+    return df
 
 
 def join_schedule_and_emissions(
@@ -92,6 +160,11 @@ def join_schedule_and_emissions(
     schedule_df = _load_schedule(start_date, end_date)
     emissions_df = _load_emissions()
 
+    # Cast FLTNO to int64 to match FLIGHT_NUMBER type
+    schedule_df = schedule_df.with_columns(
+        pl.col("FLTNO").cast(pl.Int64, allow_null=True)
+    )
+
     # Join on carrier code and flight number
     joined = schedule_df.join(
         emissions_df,
@@ -107,6 +180,121 @@ def join_schedule_and_emissions(
         joined = joined.filter(pl.col("ARRAPT") == end_airport.upper())
 
     return joined.collect()
+
+def find_connecting_flights(
+    start_airport: str,
+    end_airport: str,
+    start_date: datetime,
+    end_date: datetime,
+    min_wait_mins: int = 40,
+    max_wait_mins: int = 240,
+) -> pl.DataFrame:
+    """
+    Find connecting flights between two airports with a connection point.
+
+    Args:
+        start_airport: Starting airport code (DEPAPT)
+        end_airport: Final destination airport code (ARRAPT)
+        start_date: Start date for flights
+        end_date: End date for flights
+        min_wait_mins: Minimum wait time in minutes (default 40)
+        max_wait_mins: Maximum wait time in minutes (default 240 = 4 hours)
+
+    Returns:
+        DataFrame with connecting flight pairs
+    """
+    # Get all flights from start to any intermediate airport
+    all_flights = join_schedule_and_emissions(start_date, end_date)
+
+    # Convert to polars for easier manipulation
+    df = pl.DataFrame(all_flights.to_dicts())
+
+    # Find outbound flights (from start airport)
+    outbound = df.filter(pl.col("DEPAPT") == start_airport.upper())
+
+    # Find return flights (to end airport)
+    inbound = df.filter(pl.col("ARRAPT") == end_airport.upper())
+
+    if len(outbound) == 0 or len(inbound) == 0:
+        return pl.DataFrame()
+
+    # Find possible connections
+    connections = []
+
+    for out_row in outbound.to_dicts():
+        # Arrival airport of outbound flight is the connection point
+        connection_airport = out_row.get("ARRAPT")
+        arrival_time_str = out_row.get("ARRTIM")  # e.g., "1015"
+
+        # Parse arrival time
+        if not arrival_time_str:
+            continue
+
+        try:
+            arr_hours = int(str(arrival_time_str)[:2])
+            arr_mins = int(str(arrival_time_str)[2:4])
+            arrival_mins = arr_hours * 60 + arr_mins
+        except (ValueError, IndexError):
+            continue
+
+        # Find inbound flights from this connection airport
+        possible_connections = inbound.filter(
+            pl.col("DEPAPT") == connection_airport.upper()
+        )
+
+        for in_row in possible_connections.to_dicts():
+            departure_time_str = in_row.get("DEPTIM")  # e.g., "1115"
+
+            if not departure_time_str:
+                continue
+
+            try:
+                dep_hours = int(str(departure_time_str)[:2])
+                dep_mins = int(str(departure_time_str)[2:4])
+                departure_mins = dep_hours * 60 + dep_mins
+            except (ValueError, IndexError):
+                continue
+
+            # Calculate wait time
+            wait_mins = departure_mins - arrival_mins
+
+            # Handle day boundary (if arrival is late and departure is early next day)
+            if wait_mins < 0:
+                wait_mins += 24 * 60
+
+            # Check if wait time is within acceptable range
+            if min_wait_mins <= wait_mins <= max_wait_mins:
+                connections.append(
+                    {
+                        "outbound_flight": out_row.get("FLTNO"),
+                        "outbound_carrier": out_row.get("CARRIER_CD_ICAO"),
+                        "outbound_departure": out_row.get("DEPTIM"),
+                        "outbound_arrival": out_row.get("ARRTIM"),
+                        "outbound_departure_airport": out_row.get("DEPAPT"),
+                        "outbound_arrival_airport": out_row.get("ARRAPT"),
+                        "outbound_co2": out_row.get("ESTIMATED_CO2_TOTAL_TONNES"),
+                        "outbound_fuel": out_row.get("ESTIMATED_FUEL_BURN_TOTAL_TONNES"),
+                        "outbound_date": out_row.get("FLIGHT_DATE"),
+                        "connection_airport": connection_airport,
+                        "wait_time_mins": wait_mins,
+                        "inbound_flight": in_row.get("FLTNO"),
+                        "inbound_carrier": in_row.get("CARRIER_CD_ICAO"),
+                        "inbound_departure": in_row.get("DEPTIM"),
+                        "inbound_arrival": in_row.get("ARRTIM"),
+                        "inbound_departure_airport": in_row.get("DEPAPT"),
+                        "inbound_arrival_airport": in_row.get("ARRAPT"),
+                        "inbound_co2": in_row.get("ESTIMATED_CO2_TOTAL_TONNES"),
+                        "inbound_fuel": in_row.get("ESTIMATED_FUEL_BURN_TOTAL_TONNES"),
+                        "inbound_date": in_row.get("FLIGHT_DATE"),
+                        "total_co2": float(out_row.get("ESTIMATED_CO2_TOTAL_TONNES", 0))
+                        + float(in_row.get("ESTIMATED_CO2_TOTAL_TONNES", 0)),
+                        "total_fuel": float(out_row.get("ESTIMATED_FUEL_BURN_TOTAL_TONNES", 0))
+                        + float(in_row.get("ESTIMATED_FUEL_BURN_TOTAL_TONNES", 0)),
+                    }
+                )
+
+    return pl.DataFrame(connections) if connections else pl.DataFrame()
+
 
 def main():
     start_date = datetime(2025, 5, 1)
