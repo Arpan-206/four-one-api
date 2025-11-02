@@ -1,10 +1,10 @@
 from fastapi import FastAPI, Body
 from fastapi.responses import StreamingResponse
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import polars as pl
 from data import load_schedule, load_emissions, join_flights_with_emissions, stream_joined_flights, get_connecting_flights, stream_connecting_flights
-from candidates import get_candidate_cities, get_nearest_cities, get_candidates_with_custom, get_airport_code_by_city, get_all_candidate_airport_codes
+from candidates import get_candidate_cities, get_nearest_cities, get_candidates_with_custom
 from filter import get_filtered_candidates, build_attendee_candidates
 
 

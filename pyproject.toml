@@ -16,3 +16,8 @@ dependencies = [
     "pandas>=2.0.0",
     "watchdog>=6.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.3",
+]

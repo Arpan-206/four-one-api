@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 import json
 import pydeck as pdk
-import time
 import random
 from datetime import datetime, timedelta
 from candidates import CANDIDATE_CITIES, get_airport_code_by_city
 from filter import get_coordinates_from_nominatim, get_filtered_candidates
+from scoring import score_meeting_location
 
 
 @st.cache_data
@@ -38,6 +38,26 @@ def city_to_coords(city_name: str) -> tuple:
         return coords
 
     return None
+
+
+def city_to_coords_cached(city_name: str) -> tuple:
+    """
+    Convert city name to coordinates with session state caching.
+    Prevents redundant lookups within the same page load.
+
+    Args:
+        city_name: Name or airport code of the city
+
+    Returns:
+        Tuple of (latitude, longitude), or None if not found
+    """
+    if "coords_cache" not in st.session_state:
+        st.session_state.coords_cache = {}
+
+    if city_name not in st.session_state.coords_cache:
+        st.session_state.coords_cache[city_name] = city_to_coords(city_name)
+
+    return st.session_state.coords_cache[city_name]
 
 
 def create_arc_layer_data(data: dict, animation_progress: float = 1.0) -> pd.DataFrame:
@@ -95,35 +115,140 @@ def create_arc_layer_data(data: dict, animation_progress: float = 1.0) -> pd.Dat
     return pd.DataFrame(arcs)
 
 
-def convert_input_to_output(input_data: dict) -> dict:
+def convert_input_to_output(input_data: dict, time_weight: float = 0.5, emissions_weight: float = 0.5) -> dict:
     """
-    Convert input format (attendees, availability_window, event_duration) to output format.
+    Convert input format to output format using scoring system.
 
-    This is a stub - actual implementation will be done by other code.
-    For now, returns basic conversion with placeholder event location.
+    Uses score_meeting_location to find optimal location based on:
+    - Travel time from attendee cities (configurable weight)
+    - CO2 emissions (configurable weight)
 
     Args:
         input_data: Input dict with attendees, availability_window, event_duration
+        time_weight: Weight for travel time (0-1), where 1 = prioritize speed
+        emissions_weight: Weight for CO2 emissions (0-1), where 1 = prioritize eco-friendly
 
     Returns:
-        Output dict with event_location and attendee_travel_hours
+        Output dict with event_location and scoring details
     """
+    print("[DEBUG] convert_input_to_output called")
+
+    # Extract input data
     attendees = input_data.get("attendees", {})
+    availability_window = input_data.get("availability_window", {})
 
-    # Placeholder: use the first attendee's city as event location
-    # TODO: This will be determined by optimization algorithm
-    event_location = list(attendees.keys())[0] if attendees else "New York"
+    if not attendees:
+        st.error("No attendees in input data")
+        return None
 
-    # Placeholder travel hours - TODO: will be calculated based on flights
-    attendee_travel_hours = {city: 10.0 for city in attendees.keys()}
+    # Get coordinates for attendee cities
+    attendee_coords = {}
+    for city_name in attendees.keys():
+        coords = city_to_coords_cached(city_name)
+        if coords is None:
+            st.error(f"Could not find coordinates for: {city_name}")
+            return None
+        attendee_coords[city_name] = coords
 
-    return {
-        "event_location": event_location,
-        "event_dates": input_data.get("availability_window", {}),
-        "event_duration": input_data.get("event_duration", {}),
-        "attendee_travel_hours": attendee_travel_hours,
-        "raw_input": input_data
-    }
+    # Get candidate cities
+    try:
+        filter_result = get_filtered_candidates(list(attendees.keys()))
+        candidate_cities = filter_result.get("filtered_candidates", {})
+
+        if not candidate_cities:
+            st.warning("No candidates in polygon. Using all candidate cities.")
+            candidate_cities = {
+                code: {
+                    "city": info["city"],
+                    "country": info["country"],
+                    "lat": info["lat"],
+                    "lon": info["lon"]
+                }
+                for code, info in CANDIDATE_CITIES.items()
+            }
+    except Exception as e:
+        st.warning(f"Could not filter candidates: {e}. Using all candidate cities.")
+        candidate_cities = {
+            code: {
+                "city": info["city"],
+                "country": info["country"],
+                "lat": info["lat"],
+                "lon": info["lon"]
+            }
+            for code, info in CANDIDATE_CITIES.items()
+        }
+
+    # Extract dates
+    try:
+        start_date_str = availability_window["start"].split("T")[0]
+        end_date_str = availability_window["end"].split("T")[0]
+
+        start = datetime.fromisoformat(availability_window["start"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(availability_window["end"].replace("Z", "+00:00"))
+        time_limit_hours = (end - start).total_seconds() / 3600
+    except Exception as e:
+        st.error(f"Invalid date format: {e}")
+        return None
+
+    # Score locations with user-defined weights
+    try:
+        result = score_meeting_location(
+            attendee_cities=attendees,
+            attendee_coords=attendee_coords,
+            candidate_cities=candidate_cities,
+            start_date=start_date_str,
+            end_date=end_date_str,
+            time_limit_hours=time_limit_hours,
+            time_weight=time_weight,
+            emissions_weight=emissions_weight
+        )
+
+        if not result['best_candidate']:
+            st.error("Could not find suitable meeting location")
+            return None
+
+        best_candidate_code = result['best_candidate']
+        best_info = result['details'][best_candidate_code]
+
+        # Get actual travel hours for attendees, fallback to empty dict if not available
+        attendee_travel_hours = result.get('attendee_travel_hours', {})
+        # Ensure all attendees are in the dict (in case some weren't in the result)
+        for city in attendees.keys():
+            if city not in attendee_travel_hours:
+                attendee_travel_hours[city] = 0.0
+
+        output = {
+            "event_location": best_info['city_name'],
+            "event_location_code": best_candidate_code,
+            "event_dates": {
+                "start": availability_window.get("start"),
+                "end": availability_window.get("end"),
+                "hours": time_limit_hours
+            },
+            "event_duration": input_data.get("event_duration", {}),
+            "attendee_travel_hours": attendee_travel_hours,
+            "scoring_details": {
+                "travel_time_score": best_info['travel_time_score'],
+                "emissions_score": best_info['emissions_score'],
+                "composite_score": best_info['composite_score'],
+                "coordinates": best_info['coordinates'],
+                "weights": {
+                    "time": time_weight,
+                    "emissions": emissions_weight
+                }
+            },
+            "raw_input": input_data,
+            "filtered_candidates": candidate_cities
+        }
+
+        return output
+
+    except Exception as e:
+        st.error(f"Error scoring locations: {e}")
+        print(f"[DEBUG] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def generate_random_output(input_data: dict) -> dict:
@@ -205,16 +330,40 @@ def main():
     st.title("WorkerBees Dashboard")
     st.write("Meeting location optimizer with travel visualization")
 
-    # Initialize session state for map rendering
+    # Initialize session state for map rendering and caching
     if "last_output_data" not in st.session_state:
         st.session_state.last_output_data = None
+    if "coords_cache" not in st.session_state:
+        st.session_state.coords_cache = {}
+    if "filtered_candidates_cache" not in st.session_state:
+        st.session_state.filtered_candidates_cache = None
 
-    # Control sliders
+    # Scoring preference sliders
+    st.subheader("Scoring Preferences")
     c1, c2 = st.columns(2)
     with c1:
-        time_slider = st.slider("Time Progress", 0, 100, 100) / 100
+        time_weight = st.slider(
+            "Travel Time Importance",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            help="0 = Eco-friendly priority, 1 = Speed priority"
+        )
     with c2:
-        co2_level = st.slider("CO2 Level Filter", 0, 100, 100) / 100
+        emissions_weight = st.slider(
+            "CO2 Emissions Importance",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            help="0 = Speed priority, 1 = Eco-friendly priority"
+        )
+
+    # Animation progress slider
+    st.divider()
+    st.subheader("Visualization")
+    time_slider = st.slider("Animation Progress", 0, 100, 100) / 100
 
     upload_json = st.file_uploader("Upload optimization input JSON", type=["json"])
 
@@ -222,7 +371,7 @@ def main():
     with col1:
         use_random = st.button("🎲 Random", help="Generate random meeting location from filtered candidates", use_container_width=True)
     with col2:
-        optimize_btn = st.button("⚙️ Optimize", help="Run optimization algorithm", use_container_width=True)
+        _optimize_btn = st.button("⚙️ Optimize", help="Run optimization algorithm", use_container_width=True)
     with col3:
         export_placeholder = st.empty()
 
@@ -237,7 +386,10 @@ def main():
                     return
                 st.success("Generated random meeting location and time slot!")
             else:
-                output_data = convert_input_to_output(input_data)
+                output_data = convert_input_to_output(input_data, time_weight=time_weight, emissions_weight=emissions_weight)
+                if output_data is None:
+                    st.error("Could not generate optimized meeting location. Please try the random option or check your input data.")
+                    return
 
             # Store output data in session state for map updates
             st.session_state.last_output_data = output_data
@@ -274,7 +426,7 @@ def main():
 
             # Get event location coordinates
             event_location = output_data.get("event_location", "Unknown")
-            event_coords = city_to_coords(event_location)
+            event_coords = city_to_coords_cached(event_location)
 
             # Create the arc layer
             arc_layer = pdk.Layer(
@@ -295,13 +447,13 @@ def main():
             # Calculate map center and zoom to fit all coordinates
             attendee_travel_hours = output_data.get("attendee_travel_hours", {})
 
-            # Collect all valid coordinates
+            # Collect all valid coordinates (using cached lookups)
             coords_list = []
             if event_coords:
                 coords_list.append(event_coords)
 
             for city in attendee_travel_hours.keys():
-                coords = city_to_coords(city)
+                coords = city_to_coords_cached(city)
                 if coords:
                     coords_list.append(coords)
 
@@ -360,11 +512,14 @@ def main():
             except Exception as e:
                 st.error(f"Error rendering arc layer map: {e}")
 
-                # Fallback: show simple map with points
+                # Fallback: show simple map with points (reuse cached coordinates)
                 st.write("**Fallback: Simple map visualization**")
+                # Extract coordinates from already cached coords_list to avoid redundant lookups
+                lats = [event_coords[0]] + [coord[0] for coord in coords_list[1:]]
+                lons = [event_coords[1]] + [coord[1] for coord in coords_list[1:]]
                 map_data = pd.DataFrame({
-                    "latitude": [event_coords[0]] + [city_to_coords(city)[0] for city in attendee_travel_hours.keys()],
-                    "longitude": [event_coords[1]] + [city_to_coords(city)[1] for city in attendee_travel_hours.keys()],
+                    "latitude": lats,
+                    "longitude": lons,
                 })
                 st.map(map_data)
         else:

@@ -24,14 +24,22 @@ services:
     environment:
       - SCHEDULE_DIR=dat/
       - EMISSIONS_FILE=data/emissions.csv
+      - STREAMLIT_SERVER_MAXUPLOADSIZE=200
+      - STREAMLIT_CLIENT_SHOWSTDERR=true
     volumes:
       - .:/app
       - /app/.venv
+      - ./.streamlit:/app/.streamlit:ro
     networks:
       - app-network
     expose:
       - "8501"
-    command: uv run streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+    command: uv run streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 --client.toolbarMode=minimal --logger.level=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   nginx:
     image: nginx:alpine
