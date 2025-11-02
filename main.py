@@ -1,8 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.responses import StreamingResponse
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from data import load_schedule, load_emissions, join_flights_with_emissions, stream_joined_flights, get_connecting_flights, stream_connecting_flights
+from candidates import get_candidate_cities, get_nearest_cities, get_candidates_with_custom, get_airport_code_by_city, get_all_candidate_airport_codes
+from filter import get_filtered_candidates, build_attendee_candidates
 
 
 app = FastAPI(title="forty-one", version="0.1.0")
@@ -44,31 +46,24 @@ def get_flights(
         JSON array with flight and emissions data
     """
     try:
-        # Parse dates
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
 
-        # Load schedule and emissions
         schedule = load_schedule(start, end)
         emissions = load_emissions()
-
-        # Convert max_emissions to float if provided
         max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
-        # Join the data
         df = join_flights_with_emissions(
             schedule, emissions,
             max_emissions=max_emissions_val,
             max_flight_time=max_flight_time
         )
 
-        # Apply optional airport filters
         if depart_airport:
             df = df.filter(df["DEPAPT"] == depart_airport.upper())
         if arrival_airport:
             df = df.filter(df["ARRAPT"] == arrival_airport.upper())
 
-        # Convert to list of dicts and return as JSON
         return {"flights": df.to_dicts(), "count": len(df)}
     except ValueError as e:
         return {"error": f"Invalid date format: {str(e)}"}
@@ -104,24 +99,18 @@ def stream_flights(
 
     def generate_ndjson():
         try:
-            # Parse dates
             start = datetime.strptime(start_date, "%Y-%m-%d")
             end = datetime.strptime(end_date, "%Y-%m-%d")
 
-            # Load schedule and emissions
             schedule = load_schedule(start, end)
             emissions = load_emissions()
-
-            # Convert max_emissions to float if provided
             max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
-            # Stream joined data
             for row in stream_joined_flights(
                 schedule, emissions,
                 max_emissions=max_emissions_val,
                 max_flight_time=max_flight_time
             ):
-                # Apply optional airport filters
                 if depart_airport and row["DEPAPT"] != depart_airport.upper():
                     continue
                 if arrival_airport and row["ARRAPT"] != arrival_airport.upper():
@@ -133,18 +122,13 @@ def stream_flights(
 
     def generate_json():
         try:
-            # Parse dates
             start = datetime.strptime(start_date, "%Y-%m-%d")
             end = datetime.strptime(end_date, "%Y-%m-%d")
 
-            # Load schedule and emissions
             schedule = load_schedule(start, end)
             emissions = load_emissions()
-
-            # Convert max_emissions to float if provided
             max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
-            # Stream as JSON array
             yield "["
             first = True
             for row in stream_joined_flights(
@@ -152,7 +136,6 @@ def stream_flights(
                 max_emissions=max_emissions_val,
                 max_flight_time=max_flight_time
             ):
-                # Apply optional airport filters
                 if depart_airport and row["DEPAPT"] != depart_airport.upper():
                     continue
                 if arrival_airport and row["ARRAPT"] != arrival_airport.upper():
@@ -201,25 +184,19 @@ def get_connecting(
         if not origin or not destination:
             return {"error": "origin and destination airports are required"}
 
-        # Parse dates
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
 
-        # Load schedule and emissions
         schedule = load_schedule(start, end)
         emissions = load_emissions()
-
-        # Convert max_emissions to float if provided
         max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
-        # Get connecting flights
         connections = get_connecting_flights(
             schedule, emissions, origin, destination,
             limit=limit, max_emissions=max_emissions_val,
             max_journey_time=max_journey_time
         )
 
-        # Return connections
         return {"connections": connections, "count": len(connections)}
     except ValueError as e:
         return {"error": f"Invalid format: {str(e)}"}
@@ -261,18 +238,13 @@ def stream_connecting(
                 yield json.dumps({"error": "origin and destination airports are required"}) + "\n"
                 return
 
-            # Parse dates
             start = datetime.strptime(start_date, "%Y-%m-%d")
             end = datetime.strptime(end_date, "%Y-%m-%d")
 
-            # Load schedule and emissions
             schedule = load_schedule(start, end)
             emissions = load_emissions()
-
-            # Convert max_emissions to float if provided
             max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
-            # Stream connecting flights
             for connection in stream_connecting_flights(
                 schedule, emissions, origin, destination,
                 limit=limit, max_emissions=max_emissions_val,
@@ -288,18 +260,13 @@ def stream_connecting(
                 yield json.dumps({"error": "origin and destination airports are required"})
                 return
 
-            # Parse dates
             start = datetime.strptime(start_date, "%Y-%m-%d")
             end = datetime.strptime(end_date, "%Y-%m-%d")
 
-            # Load schedule and emissions
             schedule = load_schedule(start, end)
             emissions = load_emissions()
-
-            # Convert max_emissions to float if provided
             max_emissions_val = float(max_emissions) if max_emissions is not None else None
 
-            # Stream as JSON array
             yield "["
             first = True
             for connection in stream_connecting_flights(
@@ -319,6 +286,121 @@ def stream_connecting(
         return StreamingResponse(generate_json(), media_type="application/json")
     else:
         return StreamingResponse(generate_ndjson(), media_type="application/x-ndjson")
+
+
+@app.get("/candidate-cities")
+def list_candidate_cities():
+    """
+    Get all candidate cities for meeting location optimization.
+
+    Returns:
+        JSON object with all candidate cities and their information
+    """
+    try:
+        cities = get_candidate_cities()
+        return {
+            "total_cities": len(cities),
+            "cities": cities
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/candidate-cities/nearest")
+def nearest_cities(lat: float, lon: float, num_cities: int = 10):
+    """
+    Get nearest candidate cities to a given latitude/longitude.
+
+    Args:
+        lat: Latitude
+        lon: Longitude
+        num_cities: Number of nearest cities to return (default 10)
+
+    Returns:
+        JSON object with nearest cities sorted by distance
+    """
+    try:
+        cities = get_nearest_cities(lat, lon, num_cities)
+        return {
+            "reference_location": {"lat": lat, "lon": lon},
+            "total_cities": len(cities),
+            "cities": cities
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/candidate-cities/with-custom")
+def get_candidates_with_additions(payload: dict = Body(...)):
+    """
+    Get all candidate cities, auto-populating missing cities from input list.
+
+    Accepts a list of city names, looks up predefined cities, and geocodes any unknown cities via Nominatim.
+
+    Input format:
+    {
+        "cities": ["Mumbai", "Tokyo", "New York", "Unknown City"]
+    }
+
+    Returns:
+        JSON object with all candidate cities (default + auto-populated custom)
+    """
+    try:
+        cities_list = payload.get("cities", [])
+
+        if not cities_list:
+            return {"error": "cities list required"}
+
+        _, custom_cities = build_attendee_candidates(cities_list)
+        all_cities = get_candidates_with_custom(custom_cities)
+
+        return {
+            "total_cities": len(all_cities),
+            "custom_cities_added": len(custom_cities),
+            "cities": all_cities
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/filter-candidates")
+def filter_candidates(payload: dict = Body(...)):
+    """
+    Filter candidate cities based on convex hull polygon of attendee locations.
+
+    Input format:
+    {
+        "cities": ["Mumbai", "Tokyo", "Hong Kong", "Singapore", "Sydney"]
+    }
+
+    Output format:
+    {
+        "filtered_candidates": {
+            "SYD": {"city": "Sydney", "country": "Australia", "lat": -33.9461, "lon": 151.1772},
+            "HND": {"city": "Tokyo", "country": "Japan", "lat": 35.5494, "lon": 139.7798},
+            ...
+        },
+        "polygon_vertices": [[35.5494, 139.7798], [-33.9461, 151.1772], ...],
+        "attendee_locations": {
+            "BOM": [19.0895, 72.8656],
+            "HND": [35.5494, 139.7798],
+            ...
+        },
+        "total_candidates": 43,
+        "candidates_in_polygon": 6
+    }
+    """
+    try:
+        cities = payload.get("cities", [])
+
+        if not cities:
+            return {"error": "cities field required (list of city names)"}
+
+        result = get_filtered_candidates(cities)
+        return result
+
+    except Exception as e:
+        return {"error": f"Error filtering candidates: {str(e)}"}
 
 
 if __name__ == "__main__":
