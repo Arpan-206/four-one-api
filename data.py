@@ -18,7 +18,7 @@ def load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
     while current_date <= end_date:
         path = os.path.join(SCHEDULE_DIR, f"{current_date.year}/{current_date.month:02d}/{current_date.day:02d}.csv")
         if os.path.exists(path):
-            df = pl.scan_csv(path, infer_schema_length=10000)
+            df = pl.scan_csv(path, infer_schema_length=0)
             frames.append(df)
         current_date += timedelta(days=1)
 
@@ -30,7 +30,7 @@ def load_schedule(start_date: datetime, end_date: datetime) -> pl.LazyFrame:
 
 def load_emissions() -> pl.LazyFrame:
     """Load emissions CSV with all fields."""
-    return pl.scan_csv(EMISSIONS_FILE, infer_schema_length=10000)
+    return pl.scan_csv(EMISSIONS_FILE, infer_schema_length=0)
 
 
 def join_flights_with_emissions(
